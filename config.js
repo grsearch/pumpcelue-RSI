@@ -23,10 +23,10 @@ module.exports = {
     candleIntervalSeconds: parseInt(process.env.CANDLE_INTERVAL_SECONDS)  || 5,
   },
   rsi: {
-    period:             parseInt(process.env.RSI_PERIOD)            || 7,
-    buyCross:           parseFloat(process.env.RSI_BUY_CROSS)       || 30,
-    sellHigh:           parseFloat(process.env.RSI_SELL_HIGH)       || 80,
-    sellCross:          parseFloat(process.env.RSI_SELL_CROSS)      || 70,
-    firstPositionTpPct: parseFloat(process.env.FIRST_POSITION_TP_PCT) || 50,
+    period:      parseInt(process.env.RSI_PERIOD)     || 7,
+    buyCross:    parseFloat(process.env.RSI_BUY_CROSS) || 30,  // RSI 上穿阈值
+    buyDropPct:  parseFloat(process.env.BUY_DROP_PCT)  || 20,  // 价格跌幅条件 (%)
+    sellTpPct:   parseFloat(process.env.SELL_TP_PCT)   || 150, // 止盈百分比 (%)
+    sellSlPct:   parseFloat(process.env.SELL_SL_PCT)   || 30,  // 止损百分比 (%)
   },
 };

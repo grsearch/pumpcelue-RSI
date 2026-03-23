@@ -26,22 +26,31 @@ class TokenStore extends EventEmitter {
       address,
       symbol,
       network,
-      addedAt: Date.now(),
-      age: 0,              // minutes since added
-      lp: null,            // liquidity pool value USD
-      fdv: null,           // fully diluted valuation USD
-      price: null,
-      priceChange: null,
-      pnl: 0,              // total PnL tracking (informational)
-      candles: [],         // array of 5s candle objects
-      closes: [],          // close prices for RSI calculation
-      rsi: null,
-      prevRsi: null,
-      positionOpen: false, // whether a buy signal was sent for "first position"
-      isFirstPosition: false,      // true = current open position is the first-entry position
-      firstPositionEntryPrice: null, // price at which first position was entered
-      additionCount: 0,    // how many add-to-position signals sent
-      sellCount: 0,        // how many sell signals sent
+      addedAt:       Date.now(),
+      age:           0,      // minutes since added
+
+      // Market data
+      lp:            null,   // liquidity pool USD
+      fdv:           null,   // fully diluted valuation USD
+      price:         null,
+      priceChange:   null,
+
+      // Strategy state
+      refPrice:      null,   // 收录时的参考价（买入条件基准）
+      buyEntryPrice: null,   // 本次持仓买入价（止盈/止损基准）
+      pnl:           0,      // 当前持仓浮动盈亏 %
+
+      // Candle / RSI
+      candles:       [],     // 5s candle objects
+      closes:        [],     // close prices for RSI
+      rsi:           null,
+      prevRsi:       null,
+
+      // Position flags
+      positionOpen:  false,  // 是否当前持仓
+      additionCount: 0,      // 累计买入次数
+      sellCount:     0,      // 累计卖出次数
+
       active: true,
     };
     this.tokens.set(address, token);
@@ -97,12 +106,12 @@ class TokenStore extends EventEmitter {
    */
   logSignal(address, symbol, type, strategy, price) {
     const entry = {
-      id: Date.now() + Math.random(),
+      id:        Date.now() + Math.random(),
       timestamp: new Date().toISOString(),
       address,
       symbol,
-      type,       // 'BUY' | 'SELL'
-      strategy,   // e.g. 'FIRST_POSITION' | 'RSI_CROSS_33' | 'RSI_ABOVE_80' | 'RSI_CROSS_DOWN_70' | 'AGE_EXPIRE'
+      type,      // 'BUY' | 'SELL'
+      strategy,
       price,
     };
     this.signalLog.unshift(entry);

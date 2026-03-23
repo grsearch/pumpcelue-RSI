@@ -96,18 +96,18 @@ app.post('/api/remove-token', async (req, res) => {
 tokenStore.on('tokenAdded',   (token) => io.emit('tokenAdded', _safeToken(token)));
 
 tokenStore.on('tokenUpdated', (token) => io.emit('tokenUpdated', {
-  address:                 token.address,
-  symbol:                  token.symbol,
-  price:                   token.price,
-  lp:                      token.lp,
-  fdv:                     token.fdv,
-  rsi:                     token.rsi !== null ? parseFloat(token.rsi.toFixed(2)) : null,
-  age:                     token.age,
-  pnl:                     token.pnl,
-  positionOpen:            token.positionOpen,
-  isFirstPosition:         token.isFirstPosition,
-  firstPositionEntryPrice: token.firstPositionEntryPrice,
-  active:                  token.active,
+  address:       token.address,
+  symbol:        token.symbol,
+  price:         token.price,
+  lp:            token.lp,
+  fdv:           token.fdv,
+  rsi:           token.rsi !== null ? parseFloat(token.rsi.toFixed(2)) : null,
+  age:           token.age,
+  pnl:           token.pnl,
+  refPrice:      token.refPrice,
+  buyEntryPrice: token.buyEntryPrice,
+  positionOpen:  token.positionOpen,
+  active:        token.active,
 }));
 
 tokenStore.on('tokenRemoved', (token) => io.emit('tokenRemoved', { address: token.address }));
@@ -115,26 +115,25 @@ tokenStore.on('signalLogged', (entry) => io.emit('signalLogged', entry));
 tokenStore.on('newCandle',    ({ address, candle }) => io.emit('newCandle', { address, candle }));
 
 // ── Helper ────────────────────────────────────────────────────────
-// 只向前端暴露必要字段（不含内部聚合状态 _candleWindow 等）
 function _safeToken(t) {
   return {
-    address:                 t.address,
-    symbol:                  t.symbol,
-    age:                     t.age,
-    lp:                      t.lp,
-    fdv:                     t.fdv,
-    price:                   t.price,
-    priceChange:             t.priceChange,
-    pnl:                     t.pnl,
-    rsi:                     t.rsi !== null && t.rsi !== undefined ? parseFloat(t.rsi.toFixed(2)) : null,
-    positionOpen:            t.positionOpen,
-    isFirstPosition:         t.isFirstPosition,
-    firstPositionEntryPrice: t.firstPositionEntryPrice,
-    additionCount:           t.additionCount,
-    sellCount:               t.sellCount,
-    active:                  t.active,
-    addedAt:                 t.addedAt,
-    candles:                 t.candles.slice(-60),
+    address:       t.address,
+    symbol:        t.symbol,
+    age:           t.age,
+    lp:            t.lp,
+    fdv:           t.fdv,
+    price:         t.price,
+    priceChange:   t.priceChange,
+    pnl:           t.pnl,
+    rsi:           t.rsi !== null && t.rsi !== undefined ? parseFloat(t.rsi.toFixed(2)) : null,
+    refPrice:      t.refPrice,
+    buyEntryPrice: t.buyEntryPrice,
+    positionOpen:  t.positionOpen,
+    additionCount: t.additionCount,
+    sellCount:     t.sellCount,
+    active:        t.active,
+    addedAt:       t.addedAt,
+    candles:       t.candles.slice(-60),
   };
 }
 

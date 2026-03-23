@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SOL Monitor — 5s Strategy Dashboard</title>
+<title>SOL Monitor — RSI+Drop Strategy Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
@@ -25,6 +25,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;background:var(--bg2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
 .logo{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--accent);letter-spacing:2px;text-transform:uppercase}
 .logo span{color:var(--accent2)}
+.strategy-tag{font-size:10px;color:var(--text3);font-family:var(--mono);margin-left:10px;background:var(--bg3);border:1px solid var(--border2);padding:2px 8px;border-radius:3px;}
+.strategy-tag b{color:var(--yellow)}
 .status-bar{display:flex;gap:20px;align-items:center}
 .status-pill{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--text2)}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--text3)}
@@ -69,6 +71,12 @@ td{padding:9px 12px;font-family:var(--mono);font-size:12px;white-space:nowrap}
 .rsi-cell.overbought{color:var(--red)}
 .rsi-cell.oversold{color:var(--accent2)}
 .rsi-cell.neutral{color:var(--text)}
+
+/* drop% from refPrice */
+.drop-cell{font-weight:600}
+.drop-cell.trigger{color:var(--accent2)}  /* 已达买入跌幅 */
+.drop-cell.approaching{color:var(--yellow)}
+.drop-cell.normal{color:var(--text2)}
 
 .pnl-cell.pos{color:var(--accent2)}
 .pnl-cell.neg{color:var(--red)}
@@ -115,7 +123,10 @@ td{padding:9px 12px;font-family:var(--mono);font-size:12px;white-space:nowrap}
 <body>
 
 <header>
-  <div class="logo">SOL<span>▲</span>MONITOR <span style="font-size:10px;color:var(--text3)">5s Strategy</span></div>
+  <div style="display:flex;align-items:center">
+    <div class="logo">SOL<span>▲</span>MONITOR</div>
+    <div class="strategy-tag">买入: <b>RSI↑30 + 跌≥20%</b> &nbsp;|&nbsp; 止盈: <b>+150%</b> &nbsp;|&nbsp; 止损: <b>-30%</b></div>
+  </div>
   <div class="status-bar">
     <div class="status-pill">
       <div class="dot" id="ws-dot"></div>
@@ -156,9 +167,19 @@ td{padding:9px 12px;font-family:var(--mono);font-size:12px;white-space:nowrap}
       <table id="token-table" style="display:none">
         <thead>
           <tr>
-            <th>Symbol</th><th>Age</th><th>LP (USD)</th><th>FDV (USD)</th>
-            <th>Price</th><th>RSI(7)</th><th>Position</th><th>PnL</th>
-            <th>Contract</th><th>Status</th><th></th>
+            <th>Symbol</th>
+            <th>Age</th>
+            <th>LP (USD)</th>
+            <th>FDV (USD)</th>
+            <th>Price</th>
+            <th>Ref Price</th>
+            <th>Drop%</th>
+            <th>RSI(7)</th>
+            <th>Position</th>
+            <th>PnL</th>
+            <th>Contract</th>
+            <th>Status</th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="token-tbody"></tbody>
@@ -185,36 +206,13 @@ td{padding:9px 12px;font-family:var(--mono);font-size:12px;white-space:nowrap}
 const socket = io();
 let tokens = {};
 let signalCount = 0;
-let activeCount = 0;
-let totalCount  = 0;
 
 // ─── Socket events ────────────────────────────────────────────────
 socket.on('connect', fetchAll);
-
-socket.on('tokenAdded', (token) => {
-  tokens[token.address] = token;
-  renderTokens();
-  recalcCounts();
-});
-
-socket.on('tokenUpdated', (data) => {
-  if (!tokens[data.address]) return;
-  Object.assign(tokens[data.address], data);
-  updateTokenRow(data.address);
-  recalcCounts();
-});
-
-socket.on('tokenRemoved', ({ address }) => {
-  if (tokens[address]) { tokens[address].active = false; updateTokenRow(address); }
-  recalcCounts();
-});
-
-socket.on('signalLogged', (entry) => {
-  prependSignal(entry);
-  signalCount++;
-  document.getElementById('signal-count').textContent = signalCount + ' signals';
-  document.getElementById('stat-signals').textContent = signalCount;
-});
+socket.on('tokenAdded',   (token)  => { tokens[token.address] = token; renderTokens(); recalcCounts(); });
+socket.on('tokenUpdated', (data)   => { if (!tokens[data.address]) return; Object.assign(tokens[data.address], data); updateTokenRow(data.address); recalcCounts(); });
+socket.on('tokenRemoved', ({ address }) => { if (tokens[address]) { tokens[address].active = false; updateTokenRow(address); } recalcCounts(); });
+socket.on('signalLogged', (entry)  => { prependSignal(entry); signalCount++; document.getElementById('signal-count').textContent = signalCount + ' signals'; document.getElementById('stat-signals').textContent = signalCount; });
 
 // ─── Initial load ─────────────────────────────────────────────────
 async function fetchAll() {
@@ -224,62 +222,45 @@ async function fetchAll() {
       fetch('/api/signals?limit=100').then(r => r.json()),
       fetch('/api/status').then(r => r.json()),
     ]);
-
     tokens = {};
     (tokRes.data || []).forEach(t => { tokens[t.address] = t; });
     renderTokens();
 
-    // Signal log
     const sigList  = document.getElementById('signal-list');
     const sigEmpty = document.getElementById('signal-empty');
     const sigs = sigRes.data || [];
     signalCount = sigs.length;
     if (sigs.length > 0) {
       sigEmpty.style.display = 'none';
-      // Remove existing entries but keep the empty state node
       Array.from(sigList.children).forEach(c => { if (c !== sigEmpty) c.remove(); });
       sigs.forEach(s => sigList.appendChild(buildSignalEl(s)));
-    } else {
-      sigEmpty.style.display = 'flex';
     }
     document.getElementById('signal-count').textContent = signalCount + ' signals';
-
     updateStatus(stRes.data || {});
     recalcCounts();
-  } catch (e) {
-    console.error('fetchAll error', e);
-  }
+  } catch (e) { console.error('fetchAll error', e); }
 }
 
 // ─── Status update ────────────────────────────────────────────────
 function updateStatus(data) {
   document.getElementById('stat-signals').textContent = signalCount || (data.totalSignals ?? 0);
   document.getElementById('stat-uptime').textContent  = fmtUptime(data.uptime ?? 0);
-  const wsDot    = document.getElementById('ws-dot');
+  const wsDot = document.getElementById('ws-dot');
   const wsStatus = document.getElementById('ws-status');
-  if (data.wsConnected) {
-    wsDot.className   = 'dot green';
-    wsStatus.textContent = 'BirdEye WS: Live';
-  } else {
-    wsDot.className   = 'dot red';
-    wsStatus.textContent = 'BirdEye WS: Off';
-  }
+  if (data.wsConnected) { wsDot.className = 'dot green'; wsStatus.textContent = 'BirdEye WS: Live'; }
+  else { wsDot.className = 'dot red'; wsStatus.textContent = 'BirdEye WS: Off'; }
 }
 
 function recalcCounts() {
-  activeCount = Object.values(tokens).filter(t => t.active).length;
-  totalCount  = Object.keys(tokens).length;
+  const activeCount = Object.values(tokens).filter(t => t.active).length;
+  const totalCount  = Object.keys(tokens).length;
   document.getElementById('stat-active').textContent = activeCount;
   document.getElementById('stat-total').textContent  = totalCount;
   document.getElementById('token-count').textContent = activeCount + ' tokens';
 }
 
-// Periodic status poll (only for uptime + ws state, not token counts)
 setInterval(async () => {
-  try {
-    const r = await fetch('/api/status').then(r => r.json());
-    updateStatus(r.data || {});
-  } catch (_) {}
+  try { const r = await fetch('/api/status').then(r => r.json()); updateStatus(r.data || {}); } catch (_) {}
 }, 10000);
 
 // ─── Token table ──────────────────────────────────────────────────
@@ -288,17 +269,11 @@ function renderTokens() {
   const emptyEl = document.getElementById('empty-state');
   const tableEl = document.getElementById('token-table');
   const tbody   = document.getElementById('token-tbody');
-
-  if (list.length === 0) {
-    emptyEl.style.display = 'flex';
-    tableEl.style.display = 'none';
-    return;
-  }
+  if (list.length === 0) { emptyEl.style.display = 'flex'; tableEl.style.display = 'none'; return; }
   emptyEl.style.display = 'none';
   tableEl.style.display = 'table';
   tbody.innerHTML = '';
-  list.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0))
-      .forEach(t => tbody.appendChild(buildTokenRow(t)));
+  list.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).forEach(t => tbody.appendChild(buildTokenRow(t)));
 }
 
 function buildTokenRow(t) {
@@ -306,18 +281,28 @@ function buildTokenRow(t) {
   tr.id = 'row-' + t.address;
   if (!t.active) tr.classList.add('inactive');
 
-  const ageClass  = t.age >= 25 ? 'expire' : t.age >= 20 ? 'warn' : '';
-  const rsiVal    = t.rsi !== null && t.rsi !== undefined ? t.rsi : null;
-  const rsiClass  = rsiVal === null ? 'neutral' : rsiVal > 80 ? 'overbought' : rsiVal < 30 ? 'oversold' : 'neutral';
-  const gmgnUrl   = `https://gmgn.ai/sol/token/${t.address}`;
+  const ageClass = t.age >= 25 ? 'expire' : t.age >= 20 ? 'warn' : '';
+  const rsiVal   = t.rsi !== null && t.rsi !== undefined ? t.rsi : null;
+  const rsiClass = rsiVal === null ? 'neutral' : rsiVal > 80 ? 'overbought' : rsiVal < 30 ? 'oversold' : 'neutral';
+
+  // Drop% from refPrice
+  let dropStr  = '—';
+  let dropClass = 'normal';
+  if (t.refPrice && t.price) {
+    const drop = ((t.refPrice - t.price) / t.refPrice) * 100;
+    dropStr   = (drop >= 0 ? '-' : '+') + Math.abs(drop).toFixed(1) + '%';
+    dropClass = drop >= 20 ? 'trigger' : drop >= 10 ? 'approaching' : 'normal';
+  }
+
+  // PnL (持仓中显示 vs refPrice)
+  const pnl     = t.pnl || 0;
+  const pnlClass = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
+  const pnlStr   = t.positionOpen ? ((pnl > 0 ? '+' : '') + pnl.toFixed(2) + '%') : '—';
+
+  const posLabel = t.positionOpen ? '● Hold' : '○ —';
+  const posColor = t.positionOpen ? 'var(--accent2)' : 'var(--text3)';
+  const gmgnUrl  = `https://gmgn.ai/sol/token/${t.address}`;
   const shortAddr = t.address.length > 12 ? t.address.slice(0,6)+'...'+t.address.slice(-4) : t.address;
-  const pnl       = t.pnl || 0;
-  const pnlClass  = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '';
-  const pnlStr    = pnl !== 0 ? (pnl > 0 ? '+' : '') + pnl.toFixed(2) + '%' : '—';
-  const posLabel  = t.positionOpen
-    ? (t.isFirstPosition ? '● 1st' : '● Add')
-    : '○ —';
-  const posColor  = t.positionOpen ? 'var(--accent2)' : 'var(--text3)';
 
   tr.innerHTML = `
     <td class="symbol-cell">
@@ -330,6 +315,8 @@ function buildTokenRow(t) {
     <td>${fmtUsd(t.lp)}</td>
     <td>${fmtUsd(t.fdv)}</td>
     <td>${t.price ? '$' + fmtNum(t.price) : '—'}</td>
+    <td style="color:var(--text2)">${t.refPrice ? '$' + fmtNum(t.refPrice) : '—'}</td>
+    <td class="drop-cell ${dropClass}">${dropStr}</td>
     <td class="rsi-cell ${rsiClass}">${rsiVal !== null ? rsiVal.toFixed(1) : '—'}</td>
     <td style="color:${posColor}">${posLabel}</td>
     <td class="pnl-cell ${pnlClass}">${pnlStr}</td>
@@ -345,17 +332,13 @@ function updateTokenRow(address) {
   if (!t) return;
   const existing = document.getElementById('row-' + address);
   if (existing) existing.replaceWith(buildTokenRow(t));
-  else renderTokens(); // token was new and table might have been empty
+  else renderTokens();
 }
 
 async function removeToken(address) {
   if (!confirm('Remove this token and send SELL signal?')) return;
   try {
-    await fetch('/api/remove-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address }),
-    });
+    await fetch('/api/remove-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) });
   } catch (e) { console.error(e); }
 }
 
@@ -367,12 +350,11 @@ function prependSignal(entry) {
   const el = buildSignalEl(entry);
   el.classList.add('new', entry.type === 'BUY' ? 'flash-buy' : 'flash-sell');
   list.insertBefore(el, sigEmpty.nextSibling);
-  // Cap DOM entries at 200
   while (list.children.length > 201) list.removeChild(list.lastChild);
 }
 
 function buildSignalEl(entry) {
-  const el   = document.createElement('div');
+  const el = document.createElement('div');
   el.className = 'signal-entry';
   const time = new Date(entry.timestamp).toLocaleTimeString('zh-CN', { hour12: false });
   const shortAddr = entry.address ? entry.address.slice(0,6)+'...'+entry.address.slice(-4) : '';
@@ -410,11 +392,8 @@ function fmtUptime(s) {
 function escHtml(str) {
   return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-
-// Clock
 setInterval(() => {
-  document.getElementById('clock').textContent =
-    new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
 }, 1000);
 </script>
 </body>

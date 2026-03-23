@@ -1,20 +1,30 @@
 // src/strategy.js
-// RSI(7) 计算 + 交易策略信号
+// 策略：
 //
-// 仓位类型：
-//   isFirstPosition = true  → 仅 +50% 止盈卖出 (FIRST_POSITION_TP)
-//   isFirstPosition = false → RSI > 80 或 RSI 下穿 70 卖出
+// ── 买入条件（同时满足）────────────────────────────────────────────
+//   1. RSI(7) 上穿 30
+//   2. 当前价格 ≤ 入场参考价 × (1 - 20%)
+//      （入场参考价 = 代币被收录时 REST 拉取到的首个价格）
 //
-// 加仓：
-//   RSI(7) 上穿 30 → BUY (RSI_CROSS_UP_30)
-//   加仓后 isFirstPosition 置为 false，使用 RSI 卖出规则
+// ── 卖出条件（持仓时，任一触发）──────────────────────────────────
+//   1. 止盈：当前价格 ≥ 买入均价 × (1 + 150%)
+//   2. 止损：当前价格 ≤ 买入均价 × (1 - 30%)
+//
+// 整个监控周期（30分钟）内只允许买入一次（additionCount === 0 才触发）。
+// 买入后记录成交价作为仓位基准价（buyEntryPrice），用于止盈/止损计算。
 
-const { RSI }    = require('technicalindicators');
-const config     = require('./config');
-const tokenStore = require('./tokenStore');
+const { RSI }       = require('technicalindicators');
+const config        = require('./config');
+const tokenStore    = require('./tokenStore');
 const webhookSender = require('./webhookSender');
 
-const RSI_PERIOD = config.rsi.period; // 7
+const RSI_PERIOD   = config.rsi.period; // 默认 7，保留可配置
+
+// 策略参数（可在 .env 覆盖，这里以 config 为主，fallback 硬编码）
+const BUY_RSI_CROSS      = config.rsi.buyCross;           // 30  RSI 上穿阈值
+const BUY_DROP_PCT       = config.rsi.buyDropPct  ?? 20;  // 20% 价格较参考价跌幅阈值
+const SELL_TP_PCT        = config.rsi.sellTpPct   ?? 150; // 150% 止盈
+const SELL_SL_PCT        = config.rsi.sellSlPct   ?? 30;  // 30%  止损
 
 /**
  * 计算 RSI，数据不足时返回 null
@@ -37,90 +47,105 @@ async function evaluateStrategy(address) {
   // 需要 period+2 根才能判断交叉（当前值 + 前一值）
   if (closes.length < RSI_PERIOD + 2) return;
 
-  const rsi = calcRSI(closes);
+  const rsi     = calcRSI(closes);
   if (rsi === null) return;
 
-  const prevRsi    = token.rsi; // 上一根 K 线的 RSI
-  token.prevRsi    = prevRsi;
-  token.rsi        = rsi;
+  const prevRsi = token.rsi; // 上一根 K 线的 RSI
+  token.prevRsi = prevRsi;
+  token.rsi     = rsi;
 
   const price = token.price || closes[closes.length - 1];
+  if (!price || price <= 0) return;
 
-  // ── 首仓：+50% 止盈 ──────────────────────────────────────────────
-  // RSI 卖出逻辑对首仓无效，只有价格涨 50% 才触发卖出
-  if (token.positionOpen && token.isFirstPosition) {
-    // 入场价兜底：若 REST 拉取时价格尚未就绪，在此补录
-    if (!token.firstPositionEntryPrice && price) {
-      token.firstPositionEntryPrice = price;
-      console.log(`[Strategy] Entry price captured from WS: $${price} for ${token.symbol}`);
-    }
+  // ── 持仓中：检查止盈 / 止损 ─────────────────────────────────────
+  if (token.positionOpen && token.buyEntryPrice) {
+    const pnlPct = ((price - token.buyEntryPrice) / token.buyEntryPrice) * 100;
+    token.pnl    = parseFloat(pnlPct.toFixed(2));
 
-    if (token.firstPositionEntryPrice && price) {
-      const gainPct = ((price - token.firstPositionEntryPrice) / token.firstPositionEntryPrice) * 100;
-      token.pnl = parseFloat(gainPct.toFixed(2));
-
-      if (gainPct >= config.rsi.firstPositionTpPct) {
-        console.log(
-          `[Strategy] SELL (First Position TP +${gainPct.toFixed(1)}%): ` +
-          `${token.symbol} entry=$${token.firstPositionEntryPrice} now=$${price}`
-        );
-        await webhookSender.sendSell(
-          address, token.symbol,
-          `FIRST_POSITION_TP_+${config.rsi.firstPositionTpPct}%`,
-          price
-        );
-        token.positionOpen    = false;
-        token.isFirstPosition = false;
-        token.sellCount++;
-        // 不 return：同一根 K 线允许继续检查 RSI 加仓信号
-      }
-    }
-  }
-
-  // ── 加仓仓位：RSI 卖出 ───────────────────────────────────────────
-  if (token.positionOpen && !token.isFirstPosition) {
-    // 卖出条件 1：RSI > 80
-    if (rsi > config.rsi.sellHigh) {
-      console.log(`[Strategy] SELL (RSI>${config.rsi.sellHigh}): ${token.symbol} RSI=${rsi.toFixed(2)}`);
+    // 止盈：+150%
+    if (pnlPct >= SELL_TP_PCT) {
+      console.log(
+        `[Strategy] SELL (TP +${pnlPct.toFixed(1)}%): ` +
+        `${token.symbol} entry=$${token.buyEntryPrice} now=$${price}`
+      );
       await webhookSender.sendSell(
         address, token.symbol,
-        `RSI_ABOVE_${config.rsi.sellHigh}`,
+        `TAKE_PROFIT_+${SELL_TP_PCT}%`,
         price
       );
-      token.positionOpen = false;
-      token.sellCount++;
+      _resetPosition(token);
       return;
     }
 
-    // 卖出条件 2：RSI 下穿 70
-    if (prevRsi !== null && prevRsi >= config.rsi.sellCross && rsi < config.rsi.sellCross) {
-      console.log(`[Strategy] SELL (RSI cross↓${config.rsi.sellCross}): ${token.symbol} RSI=${rsi.toFixed(2)}`);
+    // 止损：-30%
+    if (pnlPct <= -SELL_SL_PCT) {
+      console.log(
+        `[Strategy] SELL (SL ${pnlPct.toFixed(1)}%): ` +
+        `${token.symbol} entry=$${token.buyEntryPrice} now=$${price}`
+      );
       await webhookSender.sendSell(
         address, token.symbol,
-        `RSI_CROSS_DOWN_${config.rsi.sellCross}`,
+        `STOP_LOSS_-${SELL_SL_PCT}%`,
         price
       );
-      token.positionOpen = false;
-      token.sellCount++;
+      _resetPosition(token);
       return;
     }
   }
 
-  // ── 加仓：RSI(7) 上穿 30 ─────────────────────────────────────────
-  // 无论首仓是否还在，均可触发；加仓后转为 RSI 卖出规则
-  if (prevRsi !== null && prevRsi < config.rsi.buyCross && rsi >= config.rsi.buyCross) {
-    // 异步 await 期间检查 token 是否已被到期移除
-    if (!token.active) return;
-    console.log(`[Strategy] BUY ADD (RSI cross↑${config.rsi.buyCross}): ${token.symbol} RSI=${rsi.toFixed(2)}`);
+  // ── 空仓：检查买入条件 ───────────────────────────────────────────
+  // 整个监控周期内只允许买入一次
+  if (!token.positionOpen && token.additionCount === 0) {
+    // 条件 1：RSI 上穿 30
+    const rsiCrossUp =
+      prevRsi !== null &&
+      prevRsi < BUY_RSI_CROSS &&
+      rsi     >= BUY_RSI_CROSS;
+
+    if (!rsiCrossUp) return;
+
+    // 条件 2：价格较入场参考价下跌 ≥ 20%
+    const refPrice = token.refPrice; // 代币收录时记录的参考价
+    if (!refPrice || refPrice <= 0) {
+      console.log(
+        `[Strategy] RSI cross↑${BUY_RSI_CROSS} but no refPrice yet for ${token.symbol}, skip`
+      );
+      return;
+    }
+
+    const dropPct = ((refPrice - price) / refPrice) * 100; // 正值 = 已下跌
+    if (dropPct < BUY_DROP_PCT) {
+      console.log(
+        `[Strategy] RSI cross↑${BUY_RSI_CROSS} but drop=${dropPct.toFixed(1)}% < ${BUY_DROP_PCT}% for ${token.symbol}, skip`
+      );
+      return;
+    }
+
+    // 两条件同时满足 → 买入
+    if (!token.active) return; // 异步期间可能已到期
+    console.log(
+      `[Strategy] BUY (RSI↑${BUY_RSI_CROSS} + drop ${dropPct.toFixed(1)}%): ` +
+      `${token.symbol} ref=$${refPrice} now=$${price} RSI=${rsi.toFixed(2)}`
+    );
     await webhookSender.sendBuy(
       address, token.symbol,
-      `RSI_CROSS_UP_${config.rsi.buyCross}`,
+      `RSI_CROSS_UP_${BUY_RSI_CROSS}_DROP_${BUY_DROP_PCT}PCT`,
       price
     );
-    token.additionCount++;
     token.positionOpen    = true;
-    token.isFirstPosition = false;
+    token.buyEntryPrice   = price;
+    token.pnl             = 0;
+    token.additionCount++;
   }
+}
+
+// ─── Helper ──────────────────────────────────────────────────────
+
+function _resetPosition(token) {
+  token.positionOpen  = false;
+  token.buyEntryPrice = null;
+  token.pnl           = 0;
+  token.sellCount++;
 }
 
 module.exports = { calcRSI, evaluateStrategy };

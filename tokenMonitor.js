@@ -1,5 +1,8 @@
 // src/tokenMonitor.js
 // 代币生命周期管理：加入白名单、元数据刷新、年龄追踪、到期退出
+//
+// 新策略下不再立即发 BUY；
+// 仅记录 refPrice（代币首次 REST 拉到的价格）供策略比较用。
 
 const tokenStore    = require('./tokenStore');
 const birdeyeWs     = require('./birdeyeWs');
@@ -19,28 +22,23 @@ async function onTokenReceived({ address, symbol, network }) {
   // 加入内存白名单
   const token = tokenStore.addToken(address, symbol, network);
 
-  // 1) 立即发送首仓 BUY 信号
-  await webhookSender.sendBuy(address, symbol, 'FIRST_POSITION', null);
-  token.positionOpen             = true;
-  token.isFirstPosition          = true;
-  token.firstPositionEntryPrice  = null;
-  token.additionCount            = 0;
-
-  // 2) 拉取初始元数据，将当前价格记为首仓入场价
+  // 1) 拉取初始元数据，将当前价格记为 refPrice（策略参考价）
   await refreshMetadata(address);
   const tok = tokenStore.getToken(address);
   if (tok && tok.price) {
-    tok.firstPositionEntryPrice = tok.price;
-    console.log(`[Monitor] Entry price: $${tok.price} for ${symbol}`);
+    tok.refPrice = tok.price;
+    console.log(`[Monitor] Ref price recorded: $${tok.price} for ${symbol}`);
+  } else {
+    console.log(`[Monitor] No price available yet for ${symbol}, refPrice will be set on first WS trade`);
   }
 
-  // 3) 用历史 1m K 线预热 RSI（新币可能无数据，属正常）
+  // 2) 用历史 1m K 线预热 RSI（新币可能无数据，属正常）
   await seedHistoricalCloses(address);
 
-  // 4) 订阅成交流，开始实时聚合 5s K 线
+  // 3) 订阅成交流，开始实时聚合 5s K 线
   birdeyeWs.subscribe(address);
 
-  // 5) 启动年龄计时器
+  // 4) 启动年龄计时器
   startAgeTicker(address);
 }
 
@@ -114,7 +112,7 @@ function startAgeTicker(address) {
     // 到期处理
     if (ageMs >= MAX_AGE_MS) {
       console.log(`[Monitor] Expired: ${token.symbol} (${token.age}m)`);
-      clearInterval(interval); // 先清除，防止 await 期间重复触发
+      clearInterval(interval);
       if (token.positionOpen) {
         await webhookSender.sendSell(address, token.symbol, 'AGE_EXPIRE', token.price);
         token.positionOpen = false;
@@ -128,10 +126,16 @@ function startAgeTicker(address) {
 
 /**
  * 每根 5s K 线封口时执行策略
- * 用 try/catch 保护，避免策略异常使 EventEmitter 报 unhandledRejection
  */
 tokenStore.on('newCandle', async ({ address, candle, token }) => {
   if (!token.active) return;
+
+  // 若 REST 未能拿到 refPrice，用第一根 K 线的 open 兜底
+  if (!token.refPrice && candle.open > 0) {
+    token.refPrice = candle.open;
+    console.log(`[Monitor] refPrice set from first candle open: $${candle.open} for ${token.symbol}`);
+  }
+
   try {
     await evaluateStrategy(address);
   } catch (err) {
